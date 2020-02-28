@@ -12,7 +12,6 @@
     "aws-sdk": "^2.628.0",
     "axios": "^0.19.2",
     "bull": "^3.13.0",
-    "crypto-simple": "^1.0.8",
     "dotenv": "^8.2.0",
     "html-pdf-chrome": "^0.6.0",
     "lodash.get": "^4.4.2",
