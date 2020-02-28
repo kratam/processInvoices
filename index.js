@@ -4,8 +4,11 @@ const Bull = require('bull')
 const set = require('lodash.set')
 const aws = require('aws-sdk')
 const { getSessionCookie } = require('./airbnb')
+const { Crypter } = require('./crypter')
 
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
+// const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+const crypter = new Crypter(process.env.CRYPTER_KEY)
 
 const DEFAULT_OPTIONS = {
   port: process.env.CHROME_PORT || undefined, // port Chrome is listening on
@@ -57,32 +60,36 @@ const uploadToS3 = (Key, Body) => {
   })
 }
 
-queue.process('generate', 1, async function(job) {
+const concurrency = Number(process.env.CONCURRENCY || 5)
+
+queue.process('generate', concurrency, async function(job) {
   console.log(`running job ${job.id}`)
-  const { ids, token } = job.data
+  const start = new Date()
+  const { ids, companyId = '', encryptedToken } = job.data
+  const token = crypter.decrypt(encryptedToken)
   const Cookie = await getSessionCookie(token)
-  await delay(400)
-  const key = `${ids[0]}.pdf`
+  const key = `${companyId}${ids[0]}.pdf`
   const html = `https://www.airbnb.com/vat_invoices/${ids[0]}?hide_nav=true&platform=android`
   const options = { ...DEFAULT_OPTIONS }
   set(options, 'extraHTTPHeaders.Cookie', Cookie)
-  return (
-    htmlPdf
-      .create(html, options)
-      // check the string version, if it contains "please log in", we have a problem...
-      .then(pdf => pdf.toBuffer())
-      .then(buffer => uploadToS3(key, buffer))
-      .then(() => console.log(`${key} uploaded`))
-      .then(() =>
-        queue.add('uploaded', {
-          [ids[0]]: `https://airbnb-invoices.oss.nodechef.com/${key}`,
-        }),
-      )
-      .catch(err => {
-        console.error(err)
-        throw err
-      })
-  )
+  return htmlPdf
+    .create(html, options)
+    .then(pdf => pdf.toBuffer())
+    .then(buffer => uploadToS3(key, buffer))
+    .then(() =>
+      queue.add('uploaded', {
+        [ids[0]]: `https://airbnb-invoices.oss.nodechef.com/${key}`,
+      }),
+    )
+    .then(() =>
+      console.log(
+        `${key} finished in ${((new Date() - start) / 1000).toFixed(1)}s`,
+      ),
+    )
+    .catch(err => {
+      console.error(err)
+      throw err
+    })
 })
 
 console.log('Waiting for jobs...')
