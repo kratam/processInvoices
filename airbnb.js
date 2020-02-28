@@ -12,7 +12,8 @@ async function getSessionCookie(token) {
     },
   }).then(r => r.data)
   const cookie = { sbc: 1 }
-  const session = get(data, 'user_session', {})
+  const session = get(data, 'user_session')
+  if (!session) throw new Error('no-session-in-response')
   cookie[session.cookie_name] = session.session_id
   cookie[session.aat_cookie_name] = session.aat
   return cookieToString(cookie)

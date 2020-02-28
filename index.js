@@ -5,6 +5,8 @@ const set = require('lodash.set')
 const aws = require('aws-sdk')
 const { getSessionCookie } = require('./airbnb')
 
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
+
 const DEFAULT_OPTIONS = {
   port: process.env.CHROME_PORT || undefined, // port Chrome is listening on
   chromeFlags: [
@@ -59,24 +61,28 @@ queue.process('generate', 1, async function(job) {
   console.log(`running job ${job.id}`)
   const { ids, token } = job.data
   const Cookie = await getSessionCookie(token)
+  await delay(400)
   const key = `${ids[0]}.pdf`
   const html = `https://www.airbnb.com/vat_invoices/${ids[0]}?hide_nav=true&platform=android`
   const options = { ...DEFAULT_OPTIONS }
   set(options, 'extraHTTPHeaders.Cookie', Cookie)
-  return htmlPdf
-    .create(html, options)
-    .then(pdf => pdf.toBuffer())
-    .then(buffer => uploadToS3(key, buffer))
-    .then(() => console.log(`${key} uploaded`))
-    .then(() =>
-      queue.add('uploaded', {
-        [ids[0]]: `https://airbnb-invoices.oss.nodechef.com/${key}`,
-      }),
-    )
-    .catch(err => {
-      console.error(err)
-      throw err
-    })
+  return (
+    htmlPdf
+      .create(html, options)
+      // check the string version, if it contains "please log in", we have a problem...
+      .then(pdf => pdf.toBuffer())
+      .then(buffer => uploadToS3(key, buffer))
+      .then(() => console.log(`${key} uploaded`))
+      .then(() =>
+        queue.add('uploaded', {
+          [ids[0]]: `https://airbnb-invoices.oss.nodechef.com/${key}`,
+        }),
+      )
+      .catch(err => {
+        console.error(err)
+        throw err
+      })
+  )
 })
 
 console.log('Waiting for jobs...')
