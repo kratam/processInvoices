@@ -3,6 +3,7 @@ const htmlPdf = require('html-pdf-chrome')
 const Bull = require('bull')
 const set = require('lodash.set')
 const aws = require('aws-sdk')
+const { getSessionCookie } = require('./airbnb')
 
 const DEFAULT_OPTIONS = {
   port: process.env.CHROME_PORT || undefined, // port Chrome is listening on
@@ -54,30 +55,28 @@ const uploadToS3 = (Key, Body) => {
   })
 }
 
-queue.process('generate', 1, function(job, done) {
+queue.process('generate', 1, async function(job) {
   console.log(`running job ${job.id}`)
-  const { ids, Cookie } = job.data
+  const { ids, token } = job.data
+  const Cookie = await getSessionCookie(token)
   const key = `${ids[0]}.pdf`
   const html = `https://www.airbnb.com/vat_invoices/${ids[0]}?hide_nav=true&platform=android`
   const options = { ...DEFAULT_OPTIONS }
   set(options, 'extraHTTPHeaders.Cookie', Cookie)
-  htmlPdf
+  return htmlPdf
     .create(html, options)
     .then(pdf => pdf.toBuffer())
     .then(buffer => uploadToS3(key, buffer))
-    .then(() => console.log(`${key}.pdf uploaded`))
+    .then(() => console.log(`${key} uploaded`))
     .then(() =>
       queue.add('uploaded', {
         [ids[0]]: `https://airbnb-invoices.oss.nodechef.com/${key}`,
       }),
     )
-    .then(() => done())
     .catch(err => {
       console.error(err)
-      done(err)
+      throw err
     })
 })
 
 console.log('Waiting for jobs...')
-
-// const html = fs.readFileSync('./inv.html').toString()
