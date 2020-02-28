@@ -4,6 +4,7 @@ const Bull = require('bull')
 const set = require('lodash.set')
 const aws = require('aws-sdk')
 const { getSessionCookie } = require('./airbnb')
+const { Crypter } = require('./crypter')
 
 const DEFAULT_OPTIONS = {
   port: process.env.CHROME_PORT || undefined, // port Chrome is listening on
@@ -55,11 +56,14 @@ const uploadToS3 = (Key, Body) => {
   })
 }
 
+const crypter = new Crypter(process.env.CRYPTER_KEY)
+
 queue.process('generate', 1, async function(job) {
   console.log(`running job ${job.id}`)
-  const { ids, token } = job.data
+  const { ids, companyId = '', encryptedToken } = job.data
+  const token = crypter.decrypt(encryptedToken)
   const Cookie = await getSessionCookie(token)
-  const key = `${ids[0]}.pdf`
+  const key = `${companyId}${ids[0]}.pdf`
   const html = `https://www.airbnb.com/vat_invoices/${ids[0]}?hide_nav=true&platform=android`
   const options = { ...DEFAULT_OPTIONS }
   set(options, 'extraHTTPHeaders.Cookie', Cookie)
