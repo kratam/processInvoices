@@ -13,8 +13,7 @@ const DEFAULT_OPTIONS = {
     '--window-size=1920,1080',
   ],
   printOptions: {
-    scale: 0.85,
-    landscape: true,
+    scale: 0.7,
   },
 }
 
