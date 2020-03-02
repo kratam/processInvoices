@@ -25,7 +25,7 @@ const DEFAULT_OPTIONS = {
 
 const queue = new Bull('pdf', {
   redis: {
-    port: process.env.BULL_PORT || 2407,
+    port: process.env.BULL_PORT || 6379,
     host: process.env.BULL_HOST,
     password: process.env.BULL_PW,
     db: process.env.BULL_DB || 1,
