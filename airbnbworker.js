@@ -36,7 +36,7 @@ queue.process('getReservations', concurrency, function(job) {
   })
   for (const reservations of reservationsGenerator) {
     Promise.await(
-      queue.add(
+      meteorQueue.add(
         'receivedAirbnbReservations',
         { reservations, apartmentId },
         {
