@@ -15,6 +15,15 @@ const queue = new Bull('airbnb-worker', {
   },
 })
 
+const meteorQueue = new Bull('meteor', {
+  redis: {
+    port: process.env.BULL_PORT || 6379,
+    host: process.env.BULL_HOST,
+    password: process.env.BULL_PW,
+    db: process.env.BULL_DB || 1,
+  },
+})
+
 const concurrency = Number(process.env.CONCURRENCY || 5)
 
 queue.process('getReservations', concurrency, function(job) {
@@ -28,7 +37,7 @@ queue.process('getReservations', concurrency, function(job) {
   for (const reservations of reservationsGenerator) {
     Promise.await(
       queue.add(
-        'receivedReservations',
+        'receivedAirbnbReservations',
         { reservations, apartmentId },
         {
           removeOnComplete: true,

@@ -19,7 +19,16 @@ const DEFAULT_OPTIONS = {
   },
 }
 
-const queue = new Bull('pdf', {
+const queue = new Bull('invoice-worker', {
+  redis: {
+    port: process.env.BULL_PORT || 6379,
+    host: process.env.BULL_HOST,
+    password: process.env.BULL_PW,
+    db: process.env.BULL_DB || 1,
+  },
+})
+
+const meteorQueue = new Bull('meteor', {
   redis: {
     port: process.env.BULL_PORT || 6379,
     host: process.env.BULL_HOST,
@@ -73,7 +82,7 @@ queue.process('generate', concurrency, async function(job) {
     .then(pdf => pdf.toBuffer())
     .then(buffer => uploadToS3(key, buffer))
     .then(() =>
-      queue.add('uploaded', {
+      meteorQueue.add('uploaded-invoice', {
         [ids[0]]: `https://airbnb-invoices.oss.nodechef.com/${key}`,
       }),
     )
