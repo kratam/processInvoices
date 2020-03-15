@@ -3,12 +3,8 @@ const htmlPdf = require('html-pdf-chrome')
 const Bull = require('bull')
 const set = require('lodash.set')
 const aws = require('aws-sdk')
-const { getSessionCookie } = require('./airbnb')
-const { Crypter } = require('./crypter')
-
+const { AirbnbService } = require('./airbnb')
 // const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
-
-const crypter = new Crypter(process.env.CRYPTER_KEY)
 
 const DEFAULT_OPTIONS = {
   port: process.env.CHROME_PORT || undefined, // port Chrome is listening on
@@ -66,8 +62,8 @@ queue.process('generate', concurrency, async function(job) {
   console.log(`running job ${job.id}`)
   const start = new Date()
   const { ids, companyId = '', encryptedToken } = job.data
-  const token = crypter.decrypt(encryptedToken)
-  const Cookie = await getSessionCookie(token)
+  const airbnb = new AirbnbService({ token: encryptedToken })
+  const Cookie = airbnb.getSessionCookie()
   const key = `${companyId}${ids[0]}.pdf`
   const html = `https://www.airbnb.com/vat_invoices/${ids[0]}?hide_nav=true&platform=android`
   const options = { ...DEFAULT_OPTIONS }
