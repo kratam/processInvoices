@@ -26,7 +26,29 @@ const meteorQueue = new Bull('meteor', {
 
 const concurrency = Number(process.env.CONCURRENCY || 5)
 
-queue.process('getReservations', concurrency, function(job) {
+queue.process('getThreads', concurrency, function (job) {
+  console.log(`running job ${job.id}`)
+  const { companyId, hostId, tokens, lastMessageAt, ...rest } = job.data
+  const airbnb = new AirbnbService({ token: tokens[0] })
+  const threadsGenerator = airbnb.getThreadsGenerator({
+    lastMessageAt,
+    ...rest,
+  })
+  for (const threads of threadsGenerator) {
+    const job = Promise.await(
+      meteorQueue.add(
+        'receivedAirbnbThreads',
+        { threads, companyId, hostId },
+        {
+          removeOnComplete: true,
+        },
+      ),
+    )
+    console.log(`Added job meteor.receivedAirbnbThreads ${job.id}`)
+  }
+})
+
+queue.process('getReservations', concurrency, function (job) {
   console.log(`running job ${job.id}`)
   const { apartmentId, listingId, encryptedToken } = job.data
   const airbnb = new AirbnbService({ token: encryptedToken })
@@ -35,15 +57,21 @@ queue.process('getReservations', concurrency, function(job) {
     limit: 5,
   })
   for (const reservations of reservationsGenerator) {
-    Promise.await(
-      meteorQueue.add(
-        'receivedAirbnbReservations',
-        { reservations, apartmentId },
-        {
-          removeOnComplete: true,
-        },
-      ),
-    )
+    try {
+      const job = Promise.await(
+        meteorQueue.add(
+          'receivedAirbnbReservations',
+          { reservations, apartmentId },
+          {
+            removeOnComplete: true,
+          },
+        ),
+      )
+      console.log(`job ${job.id} added`)
+    } catch (error) {
+      console.error(`error adding job to meteorQueue`, error)
+      throw error
+    }
   }
 })
 

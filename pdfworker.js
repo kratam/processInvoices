@@ -40,7 +40,9 @@ const meteorQueue = new Bull('meteor', {
 const s3 = new aws.S3({
   secretAccessKey: process.env.S3_SECRET,
   accessKeyId: process.env.S3_KEY,
-  endpoint: process.env.S3_ENDPOINT || 'https://oss.nodechef.com',
+  endpoint: `https://${
+    process.env.S3_ENDPOINT || 's3.eu-central-1.wasabisys.com'
+  }`,
   // sslEnabled: true, // optional
   httpOptions: {
     timeout: 6000,
@@ -58,7 +60,7 @@ const uploadToS3 = (Key, Body) => {
       ContentType: 'application/pdf',
       ACL: 'public-read',
     }
-    s3.putObject(request, error => {
+    s3.putObject(request, (error) => {
       if (error) reject(error)
       else resolve()
     })
@@ -67,7 +69,7 @@ const uploadToS3 = (Key, Body) => {
 
 const concurrency = Number(process.env.CONCURRENCY || 5)
 
-queue.process('generate', concurrency, async function(job) {
+queue.process('generate', concurrency, async function (job) {
   console.log(`running job ${job.id}`)
   const start = new Date()
   const { ids, companyId = '', encryptedToken } = job.data
@@ -79,11 +81,13 @@ queue.process('generate', concurrency, async function(job) {
   set(options, 'extraHTTPHeaders.Cookie', Cookie)
   return htmlPdf
     .create(html, options)
-    .then(pdf => pdf.toBuffer())
-    .then(buffer => uploadToS3(key, buffer))
+    .then((pdf) => pdf.toBuffer())
+    .then((buffer) => uploadToS3(key, buffer))
     .then(() =>
       meteorQueue.add('uploaded-invoice', {
-        [ids[0]]: `https://airbnb-invoices.oss.nodechef.com/${key}`,
+        [ids[0]]: `https://airbnb-invoices.${
+          process.env.S3_ENDPOINT || 's3.eu-central-1.wasabisys.com'
+        }/${key}`,
       }),
     )
     .then(() =>
@@ -91,7 +95,7 @@ queue.process('generate', concurrency, async function(job) {
         `${key} finished in ${((new Date() - start) / 1000).toFixed(1)}s`,
       ),
     )
-    .catch(err => {
+    .catch((err) => {
       console.error(err)
       throw err
     })

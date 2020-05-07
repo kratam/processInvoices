@@ -17,7 +17,7 @@ const USER_AGENT =
 
 const CLIENT_ID = '3092nxybyb0otqw18e8nh5nty'
 
-// const log = level => (...args) => console.log(level, ...args)
+// const log = (level) => (...args) => console.log(level, ...args)
 const log = () => () => {}
 const winston = global.winston || {
   error: log('error'),
@@ -40,6 +40,8 @@ class AirbnbService {
    * @param {string=} token airbnb token. required without email/pass
    * @param {string=} email airbnb login email. required if token is not set
    * @param {string=} password airbnb password
+   * @param {*} rateLimiter rateLimiter instance
+   * @param {func} rateLimiter.removeTokens
    */
   constructor({
     baseURL = 'https://api.airbnb.com',
@@ -68,7 +70,7 @@ class AirbnbService {
    * @param {*} message error message
    * @param {*} details error details
    */
-  Error(code, message, details) {
+  throwError(code, message, details) {
     if (Meteor) throw new Meteor.Error(code, message, details)
     else throw new Error(code, message, details)
   }
@@ -81,7 +83,7 @@ class AirbnbService {
     try {
       const result = Promise.await(
         new Promise((resolve, reject) => {
-          self.rateLimiter.removeTokens(1, err => {
+          self.rateLimiter.removeTokens(1, (err) => {
             if (err) {
               winston.error(
                 '[AIRBNB] Reached queue limit!! This should never happen',
@@ -90,7 +92,7 @@ class AirbnbService {
             }
             self
               .axios(config)
-              .then(response => response.data)
+              .then((response) => response.data)
               .then(resolve)
               .catch(reject)
           })
@@ -122,8 +124,8 @@ class AirbnbService {
     axiosRetry(x, {
       shouldResetTimeout: true,
       retries: 7,
-      retryDelay: retryCount => retryCount * 1000,
-      retryCondition: error => {
+      retryDelay: (retryCount) => retryCount * 1000,
+      retryCondition: (error) => {
         winston.debug('[AIRBNB AXIOS] inside retryCondition', {
           error,
           status: _.get(error, 'response.status'),
@@ -137,14 +139,14 @@ class AirbnbService {
         )
       },
     })
-    x.interceptors.request.use(request => {
+    x.interceptors.request.use((request) => {
       winston.debug(
         `Axios to ${request.url}`,
         _.pick(request, ['url', 'params', 'method']),
       )
       return request
     })
-    x.interceptors.response.use(response => {
+    x.interceptors.response.use((response) => {
       const fields = ['status', 'statusText']
       if (response.status !== 200) fields.push('data')
       winston.debug('Axios response', _.pick(response, fields))
@@ -153,10 +155,76 @@ class AirbnbService {
 
     return x
   }
+
+  /**
+   * checks if the current instance is authenticated and works
+   * @returns {boolean}
+   */
   testConnection() {
     const user = this.getOwnUserInfo()
     return !!user && !!user.id
   }
+
+  /**
+   * return the apartments of a user from a room url
+   * @param {*} args
+   * @param {string} args.url airbnb room url
+   * @returns {object[]} listings array
+   */
+  getApartmentsFromListingUrl({ url }) {
+    check(url, String)
+    const airbnb = this
+    const listingId = this.extractNumber(url)
+    const listing = airbnb.getListings({ listingId })
+    const userId = _.get(listing, 'listings[0].user.id')
+    const listingsResult = airbnb.getListings({ userId })
+    const listings = _.get(listingsResult, 'listings', [])
+    const reverse = require('/server/geocoder').reverse
+    const mapPropertyType = (type) => {
+      switch (type) {
+        case 'private_room':
+          return 'roomWithBath'
+        default:
+          return 'apartment'
+      }
+    }
+    // get listing address
+    for (const listing of listings) {
+      try {
+        const res = Promise.await(reverse([listing.lat, listing.lng]))
+        listing.address = airbnb.parseResultToAddress(res)
+      } catch (error) {
+        winston.error('Geocoding error', { error })
+      }
+    }
+    return listings.map((l) => ({
+      airbnb: {
+        id: String(l.id),
+      },
+      location: {
+        type: 'Point',
+        coordinates: [l.lat, l.lng],
+      },
+      address: l.address,
+      avatar: {
+        url: l.x_medium_picture_url,
+        imageKey: 'external',
+      },
+      name: l.name,
+      // default required values
+      type: mapPropertyType(l.room_type_category),
+      cleaningFeeMethod: 'WITH_ACCOMMODATION',
+      currency: 'HUF',
+      beds: [],
+      taxIncludedInAccFee: true,
+      taxPercent: 4,
+      vatRate: {
+        accommodationFee: 'AAM',
+        cleaningFee: 'AAM',
+      },
+    }))
+  }
+
   /**
    * get own user info
    */
@@ -176,6 +244,93 @@ class AirbnbService {
   }
 
   /**
+   * @typedef {Object} GetThreadsOpts
+   * @property {number} [limit=10]
+   * @property {number} [offset=0]
+   */
+
+  /**
+   * get thread ids
+   * @param {GetThreadsOpts} args
+   */
+  getThreadIds(args = {}) {
+    return this._getThreads({ full: false, ...args })
+  }
+
+  *getThreadsGenerator({ lastMessageAt, maxRounds = 5, limit = 10, ...args }) {
+    let offset = 0
+    let round = 0
+    // set to limit for convenience
+    let lastResultsCount = limit
+    // will turn to true if their last message is older than ours
+    let seenOlderMessageThanOurLastMessage = false
+    while (
+      round < maxRounds &&
+      lastResultsCount === limit &&
+      !seenOlderMessageThanOurLastMessage
+    ) {
+      const { threads } = this.getThreads({ ...args, offset, limit })
+      yield threads
+      lastResultsCount = threads.length
+      seenOlderMessageThanOurLastMessage = lastMessageAt
+        ? new Date(_.last(threads).last_message_at).getTime() <=
+          lastMessageAt.getTime()
+        : false
+      offset += lastResultsCount
+      round += 1
+    }
+  }
+
+  /**
+   * Get full threads
+   * @param {GetThreadsOptions} args
+   */
+  getThreads(args = {}) {
+    return this._getThreads(args)
+  }
+
+  /**
+   * @typedef {GetThreadsOpts} _GetThreadsOpts
+   * @property {boolean} [full=true]
+   *
+   * Generic method to request to return threads
+   * @param {GetThreadsExtraOpts} args
+   */
+  _getThreads({ full = true, limit = 10, offset = 0 } = {}) {
+    return this.request({
+      url: '/v2/threads',
+      params: {
+        selected_inbox_type: 'host',
+        _limit: limit,
+        _offset: offset,
+        ...(full
+          ? {
+              _format: 'for_messaging_sync_with_posts_china',
+              include_generic_bessie_threads: true,
+              include_luxury_assisted_booking_threads: true,
+              include_mt: true,
+              include_plus_onboarding_threads: true,
+              include_restaurant_threads: true,
+              include_support_messaging_threads: true,
+              role: 'all',
+            }
+          : {}),
+      },
+    })
+  }
+
+  /**
+   * Get a single airbnb messaging thread
+   * @param {number} id airbnb threadId
+   */
+  getThread(id) {
+    return this.request({
+      url: `/v2/threads/${id}`,
+      params: { _format: 'for_messaging_sync_with_posts_china' },
+    })
+  }
+
+  /**
    * queues a pdf.generate job with the reservation's
    * invoiceIds.
    * @param {string} confirmationCode
@@ -186,7 +341,7 @@ class AirbnbService {
     if (ids.length === 0) return
     const encryptedToken = this.encryptedToken
     return queue.addJob({
-      queue: 'pdf',
+      queue: 'invoice-worker',
       name: 'generate',
       data: { ids, encryptedToken },
     })
@@ -209,7 +364,7 @@ class AirbnbService {
     const session = _.get(data, 'user_session', {})
     cookie[session.cookie_name] = session.session_id
     cookie[session.aat_cookie_name] = session.aat
-    return cookieToString(cookie)
+    return this.cookieToString(cookie)
   }
 
   /**
@@ -232,7 +387,7 @@ class AirbnbService {
   getFirstInvoice(confirmationCode) {
     const ids = this.getInvoiceIds(confirmationCode)
     if (ids.length === 0)
-      throw new this.Error('no-invoices', 'This reservation has no invoices')
+      this.throwError('no-invoices', 'This reservation has no invoices')
     return this.getInvoiceById(ids[0])
   }
 
@@ -247,7 +402,7 @@ class AirbnbService {
       quote,
       'homes_host_booking_pricing_quote.vat_invoices',
       [],
-    ).map(i => i.id)
+    ).map((i) => i.id)
   }
 
   /**
@@ -295,7 +450,7 @@ class AirbnbService {
     try {
       const ics = this.request({ url: feed }, 'public')
       const events = ical.parseICS(ics)
-      return _.map(events, event => {
+      return _.map(events, (event) => {
         if (
           event.type === 'VEVENT' &&
           // do not import blocked dates ("Airbnb (Not available)")
@@ -321,7 +476,7 @@ class AirbnbService {
             paymentType: 'wire',
           }
         }
-      }).filter(valid => valid) // not VEVENT
+      }).filter((valid) => valid) // not VEVENT
     } catch (error) {
       winston.error('[AIRBNB] Error getting res from feed', { error })
       throw error
@@ -340,9 +495,9 @@ class AirbnbService {
     let lastResultsCount = limit // initial value for convenience
     while (lastResultsCount === limit) {
       const results = this.getReservations({ offset, limit, listingId })
+      yield results
       lastResultsCount = results.length
       offset += lastResultsCount
-      yield results
     }
   }
 
@@ -357,7 +512,7 @@ class AirbnbService {
     check(limit, Number)
     const RESERVATION_MAX_LIMIT = 10
     if (limit > RESERVATION_MAX_LIMIT)
-      throw new this.Error(
+      this.throwError(
         'limit-too-high',
         `Cannot get more than ${RESERVATION_MAX_LIMIT} reservations at once, use getAllReservations`,
       )
@@ -381,7 +536,7 @@ class AirbnbService {
       // this means no reservations property in the data
       // and not 0 reservations matching the query
       if (!reservations)
-        throw new this.Error(
+        this.throwError(
           'no-reservations-in-response',
           'Response has no reservations',
         )
@@ -403,12 +558,12 @@ class AirbnbService {
     const MAX_IDS_PER_REQUEST = 5
     if (ids.length > MAX_IDS_PER_REQUEST) {
       return _.flatten(
-        _.chunk(ids, MAX_IDS_PER_REQUEST).map(chunkedIds =>
+        _.chunk(ids, MAX_IDS_PER_REQUEST).map((chunkedIds) =>
           this.getReservationsBatch({ ids: chunkedIds }),
         ),
       )
     }
-    const operations = ids.map(id => ({
+    const operations = ids.map((id) => ({
       method: 'GET',
       path: `/v2/reservations/${id}`,
       query: {
@@ -423,7 +578,7 @@ class AirbnbService {
       const response = this.request({ url: '/v2/batch', method: 'post', data })
       return (
         response.operations
-          .map(o => {
+          .map((o) => {
             const reservation = _.get(o, 'response.reservation')
             if (!reservation) {
               winston.error('[AIRBNB] No reservation in response operation', {
@@ -433,7 +588,7 @@ class AirbnbService {
             return reservation
           })
           // filter out errors
-          .filter(v => v)
+          .filter((v) => v)
       )
     } catch (error) {
       winston.error('[AIRBNB] Error in getReservationsBatch', { error })
@@ -444,7 +599,7 @@ class AirbnbService {
    * New login method since 2020.01.
    * @returns {{success: boolean, reason?: string, token?: string}}
    */
-  loginV2() {
+  loginV2({ apartmentId } = {}) {
     check(this.email, String)
     check(this.password, String)
     try {
@@ -468,21 +623,32 @@ class AirbnbService {
       const token = _.get(data, 'token')
       const userId = _.get(data, 'filledAccountData.userId')
       if (!token || !userId)
-        throw new this.Error(
+        this.throwError(
           'login-error',
           'Response does not contain token or userId',
         )
       this.userId = userId
       this.token = token
       const encryptedToken = this.crypter.encrypt(token)
+      Emitter.emit(Events.AIRBNB_LOGIN, { apartmentId, encryptedToken, userId })
       return { success: true, token: encryptedToken }
     } catch (error) {
       const status = _.get(error, 'response.status')
       switch (status) {
         case 403:
+          Emitter.emit(Events.AIRBNB_LOGIN_FAILED, {
+            apartmentId,
+            email: this.email,
+            reason: 'invalid-password',
+          })
           return { success: false, reason: 'invalid-password' }
         default: {
           winston.error('Unhandled error during airbnb verification', { error })
+          Emitter.emit(Events.AIRBNB_LOGIN_FAILED, {
+            apartmentId,
+            error,
+            reason: 'unhandled-error',
+          })
           throw error
         }
       }
@@ -496,7 +662,7 @@ class AirbnbService {
    */
   getListings({ userId, listingId }) {
     if (!listingId && !userId && !this.userId)
-      throw new this.Error('id-required', 'userId or listingId is required')
+      this.throwError('id-required', 'userId or listingId is required')
     const params = {
       // _format: 'v1_legacy_long',
       // has_availability: false,
@@ -508,7 +674,7 @@ class AirbnbService {
       return this.request({ url: '/v2/listings', params })
     } catch (e) {
       winston.error('[AIRBNB] Error in getListings', { error: e })
-      throw new this.Error(
+      this.throwError(
         'error-getting-listings',
         'Could not retreive listings from airbnb',
       )
@@ -521,9 +687,9 @@ class AirbnbService {
     let lastResultsCount = limit // initial value for convenience
     while (lastResultsCount === limit) {
       const results = this.getReviews({ offset, limit, listingId })
+      yield results
       lastResultsCount = results.reviews.length
       offset += lastResultsCount
-      yield results
     }
   }
 
@@ -554,16 +720,56 @@ class AirbnbService {
       throw e
     }
   }
-}
 
-/**
- * converts an object to a string
- * @param {*} cookie cookie object with key:values
- */
-function cookieToString(cookie) {
-  return Object.keys(cookie)
-    .map(key => `${key}=${encodeURIComponent(cookie[key])}`)
-    .join(';')
+  /////// HELPER METHODS \\\\\\
+  /**
+   * converts an object to a string
+   * @param {*} cookie cookie object with key:values
+   */
+  static cookieToString(cookie) {
+    return Object.keys(cookie)
+      .map((key) => `${key}=${encodeURIComponent(cookie[key])}`)
+      .join(';')
+  }
+
+  /**
+   * @typedef {Object} ParsedObj the returned object
+   * @property {string} address the address of the location
+   * @property {string} locality town/city
+   * @property {string} country
+   * @property {string} postcode zipcode/postcode
+   * Parses a result of a reverse geocode query to an object
+   * @param {*} result the result of a reverse geocode lookup
+   * @returns {ParsedObj}
+   */
+  static parseResultToAddress(result) {
+    const provider = _.get(result, '[0].provider')
+    switch (provider) {
+      case 'google': {
+        const address = _.get(result, '[0].streetName')
+        const locality = _.get(result, '[0].city')
+        const country = _.get(result, '[0].country')
+        const postcode = _.get(result, '[0].zipcode')
+        return { address, locality, country, postcode }
+      }
+      default: {
+        this.throwError('unknown-provider')
+      }
+    }
+  }
+
+  /**
+   * extracts the first number from a string (url) or throws an error
+   * @param {string} string string to extract number from
+   * @returns {string} string representation of the first number
+   */
+  static extractNumber(string) {
+    check(string, String)
+    const re = /\d+/g
+    const matches = string.match(re)
+    if (!matches) this.throwError('no-number', 'No number in this url')
+    return matches[0]
+  }
 }
 
 function check() {}
