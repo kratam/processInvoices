@@ -44,7 +44,9 @@ queue.process('getThreads', concurrency, function (job) {
         },
       ),
     )
-    console.log(`Added job meteor.receivedAirbnbThreads ${job.id}`)
+    console.log(
+      `Added job meteor.receivedAirbnbThreads ${job.id} (count: ${threads.length}, hostId: ${hostId}, companyId: ${companyId})`,
+    )
   }
 })
 
@@ -67,7 +69,9 @@ queue.process('getReservations', concurrency, function (job) {
           },
         ),
       )
-      console.log(`job ${job.id} added`)
+      console.log(
+        `Added job meteor.receivedAirbnbReservations ${job.id} (count: ${reservations.length}, apartmentId: ${apartmentId})`,
+      )
     } catch (error) {
       console.error(`error adding job to meteorQueue`, error)
       throw error
