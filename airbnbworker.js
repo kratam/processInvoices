@@ -3,6 +3,7 @@ const Bull = require('bull')
 const { AirbnbService } = require('./airbnb')
 const Fiber = require('fibers')
 const { makeCompatible } = require('meteor-promise')
+const { logger } = require('./logger')
 
 makeCompatible(Promise, Fiber)
 
@@ -27,7 +28,7 @@ const meteorQueue = new Bull('meteor', {
 const concurrency = Number(process.env.CONCURRENCY || 5)
 
 queue.process('getThreads', concurrency, function (job) {
-  console.log(`running job ${job.id}`)
+  logger.log(`running getThreads job ${job.id}`)
   const { companyId, hostId, tokens, lastMessageAt, ...rest } = job.data
   const airbnb = new AirbnbService({ token: tokens[0] })
   const threadsGenerator = airbnb.getThreadsGenerator({
@@ -44,14 +45,15 @@ queue.process('getThreads', concurrency, function (job) {
         },
       ),
     )
-    console.log(
+    logger.log(
       `Added job meteor.receivedAirbnbThreads ${job.id} (count: ${threads.length}, hostId: ${hostId}, companyId: ${companyId})`,
+      { threadIds: threads.map((thread) => thread.id) },
     )
   }
 })
 
 queue.process('getReservations', concurrency, function (job) {
-  console.log(`running job ${job.id}`)
+  logger.log(`running getReservations job ${job.id}`)
   const { apartmentId, listingId, encryptedToken } = job.data
   const airbnb = new AirbnbService({ token: encryptedToken })
   const reservationsGenerator = airbnb.getReservationsGenerator({
@@ -69,14 +71,15 @@ queue.process('getReservations', concurrency, function (job) {
           },
         ),
       )
-      console.log(
+      logger.log(
         `Added job meteor.receivedAirbnbReservations ${job.id} (count: ${reservations.length}, apartmentId: ${apartmentId})`,
+        { reservationIds: reservations.map((r) => r.id) },
       )
     } catch (error) {
-      console.error(`error adding job to meteorQueue`, error)
+      logger.error(`error adding job to meteorQueue`, error)
       throw error
     }
   }
 })
 
-console.log('getReservations waiting for jobs...')
+logger.log('airbnbworker waiting for jobs...')

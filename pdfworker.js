@@ -4,6 +4,7 @@ const Bull = require('bull')
 const set = require('lodash.set')
 const aws = require('aws-sdk')
 const { AirbnbService } = require('./airbnb')
+const { logger } = require('./logger')
 // const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 const DEFAULT_OPTIONS = {
@@ -70,7 +71,7 @@ const uploadToS3 = (Key, Body) => {
 const concurrency = Number(process.env.CONCURRENCY || 5)
 
 queue.process('generate', concurrency, async function (job) {
-  console.log(`running job ${job.id}`)
+  logger.log(`running generate job ${job.id}`)
   const start = new Date()
   const { ids, companyId = '', encryptedToken } = job.data
   const airbnb = new AirbnbService({ token: encryptedToken })
@@ -91,14 +92,16 @@ queue.process('generate', concurrency, async function (job) {
       }),
     )
     .then(() =>
-      console.log(
-        `${key} finished in ${((new Date() - start) / 1000).toFixed(1)}s`,
+      logger.log(
+        `generate ${key} finished in ${((new Date() - start) / 1000).toFixed(
+          1,
+        )}s`,
       ),
     )
     .catch((err) => {
-      console.error(err)
+      logger.error('Error in htmlPdf', err)
       throw err
     })
 })
 
-console.log('Waiting for jobs...')
+logger.log('pdfworker waiting for jobs...')
