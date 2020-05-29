@@ -32,7 +32,7 @@ queue.process('getThreads', concurrency, function (job) {
   const { companyId, hostId, tokens, lastMessageAt, ...rest } = job.data
   const airbnb = new AirbnbService({ token: tokens[0] })
   const threadsGenerator = airbnb.getThreadsGenerator({
-    lastMessageAt,
+    lastMessageAt: lastMessageAt ? new Date(lastMessageAt) : null,
     ...rest,
   })
   for (const threads of threadsGenerator) {
