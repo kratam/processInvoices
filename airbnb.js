@@ -7,6 +7,7 @@ const moment = require('moment')
 const { Crypter } = require('./crypter')
 const Fiber = require('fibers')
 const { makeCompatible } = require('meteor-promise')
+const { logger: winston } = require('./logger')
 
 makeCompatible(Promise, Fiber)
 
@@ -18,13 +19,13 @@ const USER_AGENT =
 const CLIENT_ID = '3092nxybyb0otqw18e8nh5nty'
 
 // const log = (level) => (...args) => console.log(level, ...args)
-const log = () => () => {}
-const winston = global.winston || {
-  error: log('error'),
-  info: log('info'),
-  warn: log('warn'),
-  debug: log('debug'),
-}
+// const log = () => () => {}
+// const winston = global.winston || {
+//   error: log('error'),
+//   info: log('info'),
+//   warn: log('warn'),
+//   debug: log('debug'),
+// }
 
 /**
  * Global limit for the number of requests per second.
