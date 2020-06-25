@@ -544,6 +544,7 @@ class AirbnbService {
       return reservations
     } catch (error) {
       winston.error('[AIRBNB] Error in getReservations', { error })
+      console.error(error)
       throw error
     }
   }
