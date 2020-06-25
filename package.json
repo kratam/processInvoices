@@ -10,7 +10,7 @@
   "license": "ISC",
   "dependencies": {
     "aws-sdk": "^2.628.0",
-    "axios": "^0.19.2",
+    "axios": "^0.18.1",
     "axios-retry": "^3.1.2",
     "bull": "^3.13.0",
     "crypto-simple": "^1.0.8",
