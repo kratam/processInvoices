@@ -33,8 +33,6 @@ const CLIENT_ID = '3092nxybyb0otqw18e8nh5nty'
  */
 const rateLimiter = new RateLimiter(8, 1000)
 
-const MeteorError = MyError
-
 class AirbnbService {
   /**
    * @param {*} args
@@ -834,13 +832,13 @@ class AirbnbService {
 
 function check() {}
 
-class MyError extends Error {
+class MeteorError extends Error {
   constructor(error, reason, details, ...params) {
     super(...params)
     const self = this
     if (Error.captureStackTrace) {
       // V8 environments (Chrome and Node.js)
-      Error.captureStackTrace(this, MyError)
+      Error.captureStackTrace(this, MeteorError)
     }
     self.error = error
     self.reason = reason
