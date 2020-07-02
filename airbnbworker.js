@@ -78,11 +78,17 @@ queue.process('getReservations', concurrency, function (job) {
         { reservationIds: reservations.map((r) => r.id) },
       )
     } catch (error) {
-      meteorQueue.add('receivedAirbnbError', {
-        error: JSON.stringify(error, getCircularReplacer()),
-        apartmentId,
-        listingId,
-      })
+      meteorQueue.add(
+        'receivedAirbnbError',
+        {
+          error: JSON.stringify(error, getCircularReplacer()),
+          apartmentId,
+          listingId,
+        },
+        {
+          removeOnComplete: true,
+        },
+      )
     }
   }
 })
