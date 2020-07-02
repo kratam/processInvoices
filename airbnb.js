@@ -486,8 +486,7 @@ class AirbnbService {
   *getReservationsGenerator({ listingId, limit = 10 } = {}) {
     let offset = 0
     let lastResultsCount = limit // initial value for convenience
-    let seenError = false
-    while (lastResultsCount === limit || seenError) {
+    while (lastResultsCount === limit) {
       try {
         const results = this.getReservations({ offset, limit, listingId })
         yield results
@@ -495,7 +494,8 @@ class AirbnbService {
         offset += lastResultsCount
       } catch (error) {
         yield error
-        seenError = true
+        // set last result count to 0 so while is stopped
+        lastResultsCount = 0
       }
     }
   }
