@@ -62,6 +62,8 @@ queue.process('getReservations', concurrency, function (job) {
   })
   for (const reservations of reservationsGenerator) {
     try {
+      // the generator threw an error
+      if (reservations instanceof Error) throw reservations
       const job = Promise.await(
         meteorQueue.add(
           'receivedAirbnbReservations',
@@ -76,10 +78,26 @@ queue.process('getReservations', concurrency, function (job) {
         { reservationIds: reservations.map((r) => r.id) },
       )
     } catch (error) {
-      logger.error(`error adding job to meteorQueue`, error)
-      throw error
+      meteorQueue.add('receivedAirbnbError', {
+        error: JSON.stringify(error, getCircularReplacer()),
+        apartmentId,
+        listingId,
+      })
     }
   }
 })
+
+const getCircularReplacer = () => {
+  const seen = new WeakSet()
+  return (key, value) => {
+    if (typeof value === 'object' && value !== null) {
+      if (seen.has(value)) {
+        return
+      }
+      seen.add(value)
+    }
+    return value
+  }
+}
 
 logger.log('airbnbworker waiting for jobs...')

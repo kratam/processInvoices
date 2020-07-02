@@ -67,13 +67,14 @@ class AirbnbService {
 
   /**
    * Throws an Error (in other envs this won't be Meteor.Error)
-   * @param {*} code error
-   * @param {*} message error message
+   * @param {*} error error
+   * @param {*} reason error message
    * @param {*} details error details
    */
-  throwError(code, message, details) {
-    if (Meteor) throw new Meteor.Error(code, message, details)
-    else throw new Error(code, message, details)
+  throwError(error, reason, details) {
+    if (typeof Meteor !== 'undefined')
+      throw new Meteor.Error(error, reason, details)
+    else throw new MyError(error, reason, details)
   }
 
   request(config, type = 'private') {
@@ -494,11 +495,17 @@ class AirbnbService {
   *getReservationsGenerator({ listingId, limit = 10 } = {}) {
     let offset = 0
     let lastResultsCount = limit // initial value for convenience
-    while (lastResultsCount === limit) {
-      const results = this.getReservations({ offset, limit, listingId })
-      yield results
-      lastResultsCount = results.length
-      offset += lastResultsCount
+    let seenError = false
+    while (lastResultsCount === limit || seenError) {
+      try {
+        const results = this.getReservations({ offset, limit, listingId })
+        yield results
+        lastResultsCount = results.length
+        offset += lastResultsCount
+      } catch (error) {
+        yield error
+        seenError = true
+      }
     }
   }
 
@@ -543,9 +550,11 @@ class AirbnbService {
         )
       return reservations
     } catch (error) {
-      winston.error('[AIRBNB] Error in getReservations', { error })
-      console.error(error)
-      throw error
+      this.throwError(
+        _.get(error, 'response.status'),
+        _.get(error, 'response.statusText'),
+        error.response,
+      )
     }
   }
 
@@ -775,5 +784,21 @@ class AirbnbService {
 }
 
 function check() {}
+
+class MyError extends Error {
+  constructor(error, reason, details, ...params) {
+    super(...params)
+    const self = this
+    if (Error.captureStackTrace) {
+      // V8 environments (Chrome and Node.js)
+      Error.captureStackTrace(this, MyError)
+    }
+    self.error = error
+    self.reason = reason
+    self.details = details
+    if (self.reason) self.message = self.reason + ' [' + self.error + ']'
+    else self.message = '[' + self.error + ']'
+  }
+}
 
 module.exports = { AirbnbService }
