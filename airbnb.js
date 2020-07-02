@@ -33,6 +33,8 @@ const CLIENT_ID = '3092nxybyb0otqw18e8nh5nty'
  */
 const rateLimiter = new RateLimiter(8, 1000)
 
+const MeteorError = MyError
+
 class AirbnbService {
   /**
    * @param {*} args
@@ -63,18 +65,6 @@ class AirbnbService {
 
     this.axios = this.buildAxios({ baseURL, currency })
     this.rateLimiter = _rateLimiter || rateLimiter
-  }
-
-  /**
-   * Throws an Error (in other envs this won't be Meteor.Error)
-   * @param {*} error error
-   * @param {*} reason error message
-   * @param {*} details error details
-   */
-  throwError(error, reason, details) {
-    if (typeof Meteor !== 'undefined')
-      throw new Meteor.Error(error, reason, details)
-    else throw new MyError(error, reason, details)
   }
 
   request(config, type = 'private') {
@@ -127,23 +117,23 @@ class AirbnbService {
       shouldResetTimeout: true,
       retries: 7,
       retryDelay: (retryCount) => retryCount * 1000,
-      retryCondition: (error) => {
-        winston.debug('[AIRBNB AXIOS] inside retryCondition', {
-          error,
-          status: _.get(error, 'response.status'),
-          statusText: _.get(error, 'response.statusText'),
-          data: _.get(error, 'response.data'),
-          code: _.get(error, 'code'),
-        })
-        return (
-          axiosRetry.isNetworkOrIdempotentRequestError(error) ||
-          error.code === 'ECONNABORTED'
-        )
-      },
+      // retryCondition: error => {
+      //   winston.debug('[AIRBNB AXIOS] inside retryCondition', {
+      //     error,
+      //     status: _.get(error, 'response.status'),
+      //     statusText: _.get(error, 'response.statusText'),
+      //     data: _.get(error, 'response.data'),
+      //     code: _.get(error, 'code'),
+      //   })
+      //   return (
+      //     axiosRetry.isNetworkOrIdempotentRequestError(error) ||
+      //     error.code === 'ECONNABORTED'
+      //   )
+      // },
     })
     x.interceptors.request.use((request) => {
       winston.debug(
-        `Axios to ${request.url}`,
+        `[AIRBNB] Axios to ${request.url}`,
         _.pick(request, ['url', 'params', 'method']),
       )
       return request
@@ -151,7 +141,7 @@ class AirbnbService {
     x.interceptors.response.use((response) => {
       const fields = ['status', 'statusText']
       if (response.status !== 200) fields.push('data')
-      winston.debug('Axios response', _.pick(response, fields))
+      winston.debug('[AIRBNB] Axios response', _.pick(response, fields))
       return response
     })
 
@@ -176,7 +166,7 @@ class AirbnbService {
   getApartmentsFromListingUrl({ url }) {
     check(url, String)
     const airbnb = this
-    const listingId = this.extractNumber(url)
+    const listingId = airbnb.extractNumber(url)
     const listing = airbnb.getListings({ listingId })
     const userId = _.get(listing, 'listings[0].user.id')
     const listingsResult = airbnb.getListings({ userId })
@@ -196,7 +186,7 @@ class AirbnbService {
         const res = Promise.await(reverse([listing.lat, listing.lng]))
         listing.address = airbnb.parseResultToAddress(res)
       } catch (error) {
-        winston.error('Geocoding error', { error })
+        winston.error('[AIRBNB] Geocoding error', { error })
       }
     }
     return listings.map((l) => ({
@@ -274,10 +264,11 @@ class AirbnbService {
       const { threads } = this.getThreads({ ...args, offset, limit })
       yield threads
       lastResultsCount = threads.length
-      seenOlderMessageThanOurLastMessage = lastMessageAt
-        ? new Date(_.last(threads).last_message_at).getTime() <=
-          lastMessageAt.getTime()
-        : false
+      seenOlderMessageThanOurLastMessage =
+        lastMessageAt && lastMessageAt.getTime
+          ? new Date(_.last(threads).last_message_at).getTime() <=
+            lastMessageAt.getTime()
+          : false
       offset += lastResultsCount
       round += 1
     }
@@ -336,6 +327,8 @@ class AirbnbService {
    * queues a pdf.generate job with the reservation's
    * invoiceIds.
    * @param {string} confirmationCode
+   * @param {Object} [deps]
+   * @param {*} [deps.queue] optional queue instance
    */
   queueInvoicePdf(confirmationCode, deps = {}) {
     const queue = deps.queue || require('/api/services').queue
@@ -389,7 +382,7 @@ class AirbnbService {
   getFirstInvoice(confirmationCode) {
     const ids = this.getInvoiceIds(confirmationCode)
     if (ids.length === 0)
-      this.throwError('no-invoices', 'This reservation has no invoices')
+      throw new MeteorError('no-invoices', 'This reservation has no invoices')
     return this.getInvoiceById(ids[0])
   }
 
@@ -520,7 +513,7 @@ class AirbnbService {
     check(limit, Number)
     const RESERVATION_MAX_LIMIT = 10
     if (limit > RESERVATION_MAX_LIMIT)
-      this.throwError(
+      throw new MeteorError(
         'limit-too-high',
         `Cannot get more than ${RESERVATION_MAX_LIMIT} reservations at once, use getAllReservations`,
       )
@@ -544,13 +537,13 @@ class AirbnbService {
       // this means no reservations property in the data
       // and not 0 reservations matching the query
       if (!reservations)
-        this.throwError(
+        throw new MeteorError(
           'no-reservations-in-response',
           'Response has no reservations',
         )
       return reservations
     } catch (error) {
-      this.throwError(
+      throw new MeteorError(
         _.get(error, 'response.status'),
         _.get(error, 'response.statusText'),
         error.response,
@@ -607,10 +600,22 @@ class AirbnbService {
   }
 
   /**
-   * New login method since 2020.01.
-   * @returns {{success: boolean, reason?: string, token?: string}}
+   * @typedef {Object} LoginV2Return
+   * @property {boolean} success indicates the success of the call
+   * @property {string} [reason] the reason if the login failed
+   * @property {string} [token] the encrypted token if the login was successful
+   *
+   * @typedef {Object} LoginV2Opts
+   * @property {string} [apartmentId] onve apartmentId
+   * @property {string} [airbnbId] airbnb listing_id in string
    */
-  loginV2({ apartmentId } = {}) {
+
+  /**
+   * New login method since 2020.01.
+   * @param {LoginV2Opts} [args] optional arguments, used for emit
+   * @returns {LoginV2Return}
+   */
+  loginV2({ apartmentId, airbnbId } = {}) {
     check(this.email, String)
     check(this.password, String)
     try {
@@ -634,14 +639,21 @@ class AirbnbService {
       const token = _.get(data, 'token')
       const userId = _.get(data, 'filledAccountData.userId')
       if (!token || !userId)
-        this.throwError(
+        throw new MeteorError(
           'login-error',
           'Response does not contain token or userId',
         )
       this.userId = userId
       this.token = token
       const encryptedToken = this.crypter.encrypt(token)
-      Emitter.emit(Events.AIRBNB_LOGIN, { apartmentId, encryptedToken, userId })
+      // TODO: check that this account has airbnbId (listing id) before emitting this
+      // because a listener will save it to the apartment
+      Emitter.emit(Events.AIRBNB_LOGIN, {
+        apartmentId,
+        encryptedToken,
+        userId,
+        airbnbId,
+      })
       return { success: true, token: encryptedToken }
     } catch (error) {
       const status = _.get(error, 'response.status')
@@ -649,14 +661,18 @@ class AirbnbService {
         case 403:
           Emitter.emit(Events.AIRBNB_LOGIN_FAILED, {
             apartmentId,
+            airbnbId,
             email: this.email,
             reason: 'invalid-password',
           })
           return { success: false, reason: 'invalid-password' }
         default: {
-          winston.error('Unhandled error during airbnb verification', { error })
+          winston.error('[AIRBNB] Unhandled error during airbnb verification', {
+            error,
+          })
           Emitter.emit(Events.AIRBNB_LOGIN_FAILED, {
             apartmentId,
+            airbnbId,
             error,
             reason: 'unhandled-error',
           })
@@ -667,13 +683,18 @@ class AirbnbService {
   }
 
   /**
+   * @typedef {Object} GetListingsOpts
+   * @property {string|number} [userId] airbnb user id
+   * @property {string|number} [listingId] airbnb listing id
+   */
+
+  /**
    * retrieve the listings of the current user or passed in user
-   * @param {string=} userId id of the target user
-   * @param {string=} listingId id of a listing
+   * @param {GetListingOpts} args an airbnb userId or listingId
    */
   getListings({ userId, listingId }) {
     if (!listingId && !userId && !this.userId)
-      this.throwError('id-required', 'userId or listingId is required')
+      throw new MeteorError('id-required', 'userId or listingId is required')
     const params = {
       // _format: 'v1_legacy_long',
       // has_availability: false,
@@ -685,11 +706,39 @@ class AirbnbService {
       return this.request({ url: '/v2/listings', params })
     } catch (e) {
       winston.error('[AIRBNB] Error in getListings', { error: e })
-      this.throwError(
+      throw new MeteorError(
         'error-getting-listings',
         'Could not retreive listings from airbnb',
       )
     }
+  }
+
+  /**
+   * @typedef {Object} SendMessageOpts
+   * @property {string|number} threadId an airbnb thread.id
+   * @property {string} message the message to send
+   *
+   * @typedef {Object} SendMessageResponse
+   * @property {Object} message
+   * @property {number} message.id
+   * @property {Object} meta
+   */
+
+  /**
+   * Sends a message to a thread
+   * @param {SendMessageOpts} args
+   * @returns {SendMessageResponse}
+   */
+  sendMessage({ threadId, message }) {
+    const response = this.request({
+      method: 'post',
+      url: '/v2/messages',
+      data: {
+        message,
+        thread_id: threadId,
+      },
+    })
+    return response
   }
 
   *getReviewsGenerator({ listingId } = {}) {
@@ -727,7 +776,7 @@ class AirbnbService {
       }
       return this.request({ url: '/v2/reviews', params })
     } catch (e) {
-      winston.error('Error getting reviews from airbnb', { error: e })
+      winston.error('[AIRBNB] Error getting reviews from airbnb', { error: e })
       throw e
     }
   }
