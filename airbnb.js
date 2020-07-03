@@ -259,16 +259,22 @@ class AirbnbService {
       lastResultsCount === limit &&
       !seenOlderMessageThanOurLastMessage
     ) {
-      const { threads } = this.getThreads({ ...args, offset, limit })
-      yield threads
-      lastResultsCount = threads.length
-      seenOlderMessageThanOurLastMessage =
-        lastMessageAt && lastMessageAt.getTime
-          ? new Date(_.last(threads).last_message_at).getTime() <=
-            lastMessageAt.getTime()
-          : false
-      offset += lastResultsCount
-      round += 1
+      try {
+        const { threads } = this.getThreads({ ...args, offset, limit })
+        yield threads
+        lastResultsCount = threads.length
+        seenOlderMessageThanOurLastMessage =
+          lastMessageAt && lastMessageAt.getTime
+            ? new Date(_.last(threads).last_message_at).getTime() <=
+              lastMessageAt.getTime()
+            : false
+        offset += lastResultsCount
+        round += 1
+      } catch (error) {
+        yield error
+        // set last result count to 0 so while is stopped
+        lastResultsCount = 0
+      }
     }
   }
 
@@ -288,26 +294,34 @@ class AirbnbService {
    * @param {GetThreadsExtraOpts} args
    */
   _getThreads({ full = true, limit = 10, offset = 0 } = {}) {
-    return this.request({
-      url: '/v2/threads',
-      params: {
-        selected_inbox_type: 'host',
-        _limit: limit,
-        _offset: offset,
-        ...(full
-          ? {
-              _format: 'for_messaging_sync_with_posts_china',
-              include_generic_bessie_threads: true,
-              include_luxury_assisted_booking_threads: true,
-              include_mt: true,
-              include_plus_onboarding_threads: true,
-              include_restaurant_threads: true,
-              include_support_messaging_threads: true,
-              role: 'all',
-            }
-          : {}),
-      },
-    })
+    try {
+      return this.request({
+        url: '/v2/threads',
+        params: {
+          selected_inbox_type: 'host',
+          _limit: limit,
+          _offset: offset,
+          ...(full
+            ? {
+                _format: 'for_messaging_sync_with_posts_china',
+                include_generic_bessie_threads: true,
+                include_luxury_assisted_booking_threads: true,
+                include_mt: true,
+                include_plus_onboarding_threads: true,
+                include_restaurant_threads: true,
+                include_support_messaging_threads: true,
+                role: 'all',
+              }
+            : {}),
+        },
+      })
+    } catch (error) {
+      throw new MeteorError(
+        _.get(error, 'response.status'),
+        _.get(error, 'response.statusText'),
+        error.response,
+      )
+    }
   }
 
   /**

@@ -27,6 +27,10 @@ const meteorQueue = new Bull('meteor', {
 
 const concurrency = Number(process.env.CONCURRENCY || 5)
 
+const throwIfError = (maybeError) => {
+  if (maybeError instanceof Error) throw maybeError
+}
+
 queue.process('getThreads', concurrency, function (job) {
   logger.log(`running getThreads job ${job.id}`)
   const { companyId, hostId, tokens, lastMessageAt, ...rest } = job.data
@@ -36,19 +40,35 @@ queue.process('getThreads', concurrency, function (job) {
     ...rest,
   })
   for (const threads of threadsGenerator) {
-    const job = Promise.await(
+    try {
+      throwIfError(threads)
+      const job = Promise.await(
+        meteorQueue.add(
+          'receivedAirbnbThreads',
+          { threads, companyId, hostId },
+          {
+            removeOnComplete: true,
+          },
+        ),
+      )
+      logger.log(
+        `Added job meteor.receivedAirbnbThreads ${job.id} (count: ${threads.length}, hostId: ${hostId}, companyId: ${companyId})`,
+        { threadIds: threads.map((thread) => thread.id) },
+      )
+    } catch (error) {
       meteorQueue.add(
-        'receivedAirbnbThreads',
-        { threads, companyId, hostId },
+        'receivedAirbnbError',
+        {
+          error: JSON.stringify(error, getCircularReplacer()),
+          companyId,
+          hostId,
+          token: tokens[0],
+        },
         {
           removeOnComplete: true,
         },
-      ),
-    )
-    logger.log(
-      `Added job meteor.receivedAirbnbThreads ${job.id} (count: ${threads.length}, hostId: ${hostId}, companyId: ${companyId})`,
-      { threadIds: threads.map((thread) => thread.id) },
-    )
+      )
+    }
   }
 })
 
@@ -63,7 +83,7 @@ queue.process('getReservations', concurrency, function (job) {
   for (const reservations of reservationsGenerator) {
     try {
       // the generator threw an error
-      if (reservations instanceof Error) throw reservations
+      throwIfError(reservations)
       const job = Promise.await(
         meteorQueue.add(
           'receivedAirbnbReservations',
