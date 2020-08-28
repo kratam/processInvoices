@@ -13,11 +13,6 @@ makeCompatible(Promise, Fiber)
 
 const crypter = new Crypter(process.env.CRYPTER_KEY)
 
-const USER_AGENT =
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/65.0.3325.181 Safari/537.36'
-
-const CLIENT_ID = '3092nxybyb0otqw18e8nh5nty'
-
 // const log = (level) => (...args) => console.log(level, ...args)
 // const log = () => () => {}
 // const winston = global.winston || {
@@ -26,6 +21,15 @@ const CLIENT_ID = '3092nxybyb0otqw18e8nh5nty'
 //   warn: log('warn'),
 //   debug: log('debug'),
 // }
+
+/* COMMON CODE FROM HERE */
+
+const USER_AGENT =
+  'Airbnb/21057117 AppVersion/20.07.1 Android/10.0 Device/Pixel 2 XL Carrier/US T-MOBILE Type/Phone'
+
+const CLIENT_ID = '3092nxybyb0otqw18e8nh5nty'
+
+const DEVICE_ID = 'plzweneedopenapi'
 
 /**
  * Global limit for the number of requests per second.
@@ -70,6 +74,8 @@ class AirbnbService {
     const token = self.token
     if (type === 'private' && token)
       _.set(config, 'headers["X-Airbnb-OAuth-Token"]', token)
+    // set device id..
+    _.set(config, 'headers["x-airbnb-device-id"]', DEVICE_ID)
     try {
       const result = Promise.await(
         new Promise((resolve, reject) => {
@@ -165,10 +171,8 @@ class AirbnbService {
     check(url, String)
     const airbnb = this
     const listingId = airbnb.extractNumber(url)
-    const listing = airbnb.getListings({ listingId })
-    const userId = _.get(listing, 'listings[0].user.id')
-    const listingsResult = airbnb.getListings({ userId })
-    const listings = _.get(listingsResult, 'listings', [])
+    const userId = _.get(airbnb.getListings({ listingId }), '[0].user.id')
+    const listings = airbnb.getListings({ userId }) || []
     const reverse = require('/server/geocoder').reverse
     const mapPropertyType = (type) => {
       switch (type) {
@@ -492,15 +496,16 @@ class AirbnbService {
 
   /**
    * Get reservations in batches
-   * @param {object=} args
-   * @param {string} args.listingId
+   * @param {object} args
+   * @param {string=} args.listingId
    * @param {number=} args.limit number of reservations per batch, maximum 10
    * @yields {AirbnbReservations[]} Reservations array
    */
   *getReservationsGenerator({ listingId, limit = 10 } = {}) {
     let offset = 0
     let lastResultsCount = limit // initial value for convenience
-    while (lastResultsCount === limit) {
+    let seenError = false
+    while (lastResultsCount === limit || seenError) {
       try {
         const results = this.getReservations({ offset, limit, listingId })
         yield results
@@ -508,17 +513,17 @@ class AirbnbService {
         offset += lastResultsCount
       } catch (error) {
         yield error
-        // set last result count to 0 so while is stopped
-        lastResultsCount = 0
+        seenError = true
       }
     }
   }
 
   /**
    * Get the reservations
-   * @param {*} args
-   * @param {number} args.offset
-   * @param {number} args.limit
+   * @param {object} args
+   * @param {number=} args.offset
+   * @param {number=} args.limit
+   * @param {string=} args.listingId
    */
   getReservations({ offset = 0, limit = 10, listingId } = {}) {
     check(offset, Number)
@@ -537,9 +542,9 @@ class AirbnbService {
         order_by: 'start_date',
         include_accept: true,
         include_canceled: true,
+        ...(listingId ? { listing_id: listingId } : {}),
         // see options: https://github.com/drawrowfly/airbnb-private-api/blob/master/src/core/AirBnb.ts#L596
       }
-      if (listingId) params.listing_id = listingId
       const data = this.request({
         method: 'get',
         url: '/v2/reservations',
@@ -618,8 +623,7 @@ class AirbnbService {
    * @property {string} [token] the encrypted token if the login was successful
    *
    * @typedef {Object} LoginV2Opts
-   * @property {string} [apartmentId] onve apartmentId
-   * @property {string} [airbnbId] airbnb listing_id in string
+   * @property {string} [airbnbAccountId] one id
    */
 
   /**
@@ -627,7 +631,7 @@ class AirbnbService {
    * @param {LoginV2Opts} [args] optional arguments, used for emit
    * @returns {LoginV2Return}
    */
-  loginV2({ apartmentId, airbnbId } = {}) {
+  loginV2({ airbnbAccountId } = {}) {
     check(this.email, String)
     check(this.password, String)
     try {
@@ -635,7 +639,7 @@ class AirbnbService {
         url: '/v2/authentications',
         method: 'post',
         headers: {
-          'x-airbnb-device-id': 'openApiFoundation',
+          'x-airbnb-device-id': 'plzweneedopenapi',
           'User-Agent': USER_AGENT,
         },
         data: {
@@ -658,33 +662,38 @@ class AirbnbService {
       this.userId = userId
       this.token = token
       const encryptedToken = this.crypter.encrypt(token)
+      const listings = this.getListings().map(({ id, name }) => ({ id, name }))
       // TODO: check that this account has airbnbId (listing id) before emitting this
       // because a listener will save it to the apartment
       Emitter.emit(Events.AIRBNB_LOGIN, {
-        apartmentId,
         encryptedToken,
+        listings,
         userId,
-        airbnbId,
+        airbnbAccountId,
       })
-      return { success: true, token: encryptedToken }
+      return { success: true, token: encryptedToken, listings }
     } catch (error) {
       const status = _.get(error, 'response.status')
       switch (status) {
         case 403:
           Emitter.emit(Events.AIRBNB_LOGIN_FAILED, {
-            apartmentId,
-            airbnbId,
+            airbnbAccountId,
             email: this.email,
             reason: 'invalid-password',
           })
           return { success: false, reason: 'invalid-password' }
+        case 420: {
+          const airlock = this.passAirlock({
+            airlock: this._extractAirlock({ error }),
+          })
+          return { success: true, airlock }
+        }
         default: {
           winston.error('[AIRBNB] Unhandled error during airbnb verification', {
             error,
           })
           Emitter.emit(Events.AIRBNB_LOGIN_FAILED, {
-            apartmentId,
-            airbnbId,
+            airbnbAccountId,
             error,
             reason: 'unhandled-error',
           })
@@ -692,6 +701,151 @@ class AirbnbService {
         }
       }
     }
+  }
+
+  /**
+   * @typedef {Object} AirlockFriction
+   * @property {string} name name (or type) of the friction
+   * @property {string=} obfuscated obfuscated email/phone address if applicable
+   * @property {string=} url url of the captcha (if name === 'captcha')
+   * @property {number=} id phone number id (if name !== 'captcha')
+   *
+   * @typedef {Object} Airlock
+   * @property {number} id airlock id
+   * @property {AirlockFriction[]} frictions airlock frictions
+   */
+
+  /**
+   * request a code OR unlocks airlock with code
+   * @param {*} args
+   * @param {Airlock} airlock our airlock object with frictions
+   * @param {string=} code OTP code
+   * @returns {Airlock}
+   */
+  passAirlock({ airlock, code }) {
+    if (!airlock) return
+
+    const friction = airlock.frictions[0]
+    // captcha has to be solved by the user
+    if (friction.name === 'captcha') return airlock
+
+    // otherwise reqest/post a OTP
+    const data = {
+      action_name: 'account_login',
+      friction: airlock.frictions[0].name,
+      id: airlock.id,
+      ...(code
+        ? { friction_data: { response: { code } } }
+        : { friction_data: {}, attempt: true }),
+    }
+
+    // add phone number id when applicable
+    if (friction.id)
+      _.set(data, 'friction_data.optionSelection.phone_number_id', friction.id)
+
+    try {
+      // request/post OTP code
+      this.request(
+        {
+          url: `/v2/airlocks/${airlock.id}`,
+          method: 'put',
+          data,
+          params: { _format: 'v1' },
+        },
+        'public',
+      )
+      return airlock
+    } catch (error) {
+      throw error
+    }
+  }
+
+  /**
+   * extract and transform an airlock object from the login response
+   * @returns {Airlock}
+   */
+  _extractAirlock({ error }) {
+    const airlock = _.get(error, 'response.data.client_error_info.airlock')
+    if (!airlock) return null
+    const frictions = [
+      ...this._captchaFriction({ airlock }),
+      ...this._emailFriction({ airlock }),
+      ...this._smsFriction({ airlock }),
+      ...this._callFriction({ airlock }),
+    ]
+    const response = {
+      id: airlock.id,
+      frictions,
+    }
+    return response
+  }
+
+  /**
+   * get captcha friction from airbnb response
+   * @returns {AirlockFriction}
+   */
+  _captchaFriction({ airlock }) {
+    const friction = airlock.friction_data.find((f) => f.name === 'captcha')
+    if (!friction) return []
+    return [
+      {
+        name: 'captcha',
+        androidSiteKey: friction.data.android_site_key,
+        siteKey: friction.data.site_key,
+        url: `https://www.airbnb.com/airlock?al_id=${airlock.id}`,
+      },
+    ]
+  }
+
+  /**
+   * get email friction from airbnb response
+   * @returns {AirlockFriction}
+   */
+  _emailFriction({ airlock }) {
+    const friction = airlock.friction_data.find(
+      (f) => f.name === 'email_code_verification',
+    )
+    if (!friction) return []
+    return [
+      {
+        name: 'email_code_verification',
+        obfuscated: friction.data.obfuscated_email_address,
+      },
+    ]
+  }
+
+  /**
+   * get sms friction from airbnb response
+   * @returns {AirlockFriction}
+   */
+  _smsFriction({ airlock }) {
+    const friction = airlock.friction_data.find(
+      (f) => f.name === 'phone_verification_via_text',
+    )
+    if (!friction) return []
+    return friction.data.phone_numbers.map((phone) => ({
+      name: 'phone_verification_via_text',
+      obfuscated: phone.obfuscated,
+      verifiedAt: phone.verified_at,
+      id: phone.id,
+    }))
+  }
+
+  /**
+   * get phonecall friction from airbnb response
+   * @returns {AirlockFriction}
+   */
+  _callFriction({ airlock }) {
+    const friction = airlock.friction_data.find(
+      (f) => f.name === 'phone_verification_via_call',
+    )
+    if (!friction) return []
+    return friction.data.phone_numbers.map((phone) => ({
+      name: 'phone_verification_via_call',
+      obfuscated: phone.obfuscated,
+      verifiedAt: phone.verified_at,
+      id: phone.id,
+    }))
   }
 
   /**
@@ -704,18 +858,39 @@ class AirbnbService {
    * retrieve the listings of the current user or passed in user
    * @param {GetListingOpts} args an airbnb userId or listingId
    */
-  getListings({ userId, listingId }) {
+  getListings({ userId, listingId } = {}) {
     if (!listingId && !userId && !this.userId)
       throw new MeteorError('id-required', 'userId or listingId is required')
     const params = {
-      // _format: 'v1_legacy_long',
-      // has_availability: false,
+      _offset: 0,
+      _limit: 20,
     }
     if (listingId) params.listing_ids = listingId
     else params.user_id = userId || this.userId
 
+    // v2/listings can return metdata or paging...
+    const getOffset = (data, listings) => {
+      if (listingId) return null // do not paginate when listingId is requested
+      if (data && data.paging && data.paging.next_offset)
+        return data.paging.next_offset
+      if (
+        data &&
+        data.metadata &&
+        data.metadata.listing_count &&
+        data.metadata.listing_count > listings.length
+      )
+        return listings.length
+      return null
+    }
+
     try {
-      return this.request({ url: '/v2/listings', params })
+      let listings = []
+      while (params._offset !== null) {
+        const data = this.request({ url: '/v2/listings', params })
+        listings = [...listings, ...data.listings]
+        params._offset = getOffset(data, listings)
+      }
+      return listings
     } catch (e) {
       winston.error('[AIRBNB] Error in getListings', { error: e })
       throw new MeteorError(
@@ -798,7 +973,7 @@ class AirbnbService {
    * converts an object to a string
    * @param {*} cookie cookie object with key:values
    */
-  static cookieToString(cookie) {
+  cookieToString(cookie) {
     return Object.keys(cookie)
       .map((key) => `${key}=${encodeURIComponent(cookie[key])}`)
       .join(';')
@@ -814,7 +989,7 @@ class AirbnbService {
    * @param {*} result the result of a reverse geocode lookup
    * @returns {ParsedObj}
    */
-  static parseResultToAddress(result) {
+  parseResultToAddress(result) {
     const provider = _.get(result, '[0].provider')
     switch (provider) {
       case 'google': {
@@ -825,7 +1000,7 @@ class AirbnbService {
         return { address, locality, country, postcode }
       }
       default: {
-        this.throwError('unknown-provider')
+        throw new MeteorError('unknown-provider')
       }
     }
   }
@@ -835,11 +1010,11 @@ class AirbnbService {
    * @param {string} string string to extract number from
    * @returns {string} string representation of the first number
    */
-  static extractNumber(string) {
+  extractNumber(string) {
     check(string, String)
     const re = /\d+/g
     const matches = string.match(re)
-    if (!matches) this.throwError('no-number', 'No number in this url')
+    if (!matches) throw new MeteorError('no-number', 'No number in this url')
     return matches[0]
   }
 }
