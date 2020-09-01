@@ -59,8 +59,9 @@ queue.process('getThreads', concurrency, function (job) {
       meteorQueue.add(
         'receivedAirbnbError',
         {
-          error: JSON.stringify(error, getCircularReplacer()),
           ...rest,
+          error: JSON.stringify(error, getCircularReplacer()),
+          method: 'getThreads',
         },
         {
           removeOnComplete: true,
@@ -99,9 +100,10 @@ queue.process('getReservations', concurrency, function (job) {
       meteorQueue.add(
         'receivedAirbnbError',
         {
-          error: JSON.stringify(error, getCircularReplacer()),
-          listingId,
           ...rest,
+          error: JSON.stringify(error, getCircularReplacer()),
+          method: 'getReservations',
+          listingId,
         },
         {
           removeOnComplete: true,
