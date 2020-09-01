@@ -504,8 +504,7 @@ class AirbnbService {
   *getReservationsGenerator({ listingId, limit = 10 } = {}) {
     let offset = 0
     let lastResultsCount = limit // initial value for convenience
-    let seenError = false
-    while (lastResultsCount === limit || seenError) {
+    while (lastResultsCount === limit) {
       try {
         const results = this.getReservations({ offset, limit, listingId })
         yield results
@@ -513,7 +512,8 @@ class AirbnbService {
         offset += lastResultsCount
       } catch (error) {
         yield error
-        seenError = true
+        // this will end the generator
+        lastResultsCount = 0
       }
     }
   }
@@ -663,15 +663,18 @@ class AirbnbService {
       this.token = token
       const encryptedToken = this.crypter.encrypt(token)
       const listings = this.getListings().map(({ id, name }) => ({ id, name }))
+      const user = this.getOwnUserInfo()
+      const name = user.first_name
       // TODO: check that this account has airbnbId (listing id) before emitting this
       // because a listener will save it to the apartment
       Emitter.emit(Events.AIRBNB_LOGIN, {
         encryptedToken,
         listings,
         userId,
+        name,
         airbnbAccountId,
       })
-      return { success: true, token: encryptedToken, listings }
+      return { success: true, token: encryptedToken, listings, userId, name }
     } catch (error) {
       const status = _.get(error, 'response.status')
       switch (status) {
@@ -933,10 +936,16 @@ class AirbnbService {
     let offset = 0
     let lastResultsCount = limit // initial value for convenience
     while (lastResultsCount === limit) {
-      const results = this.getReviews({ offset, limit, listingId })
-      yield results
-      lastResultsCount = results.reviews.length
-      offset += lastResultsCount
+      try {
+        const results = this.getReviews({ offset, limit, listingId })
+        yield results
+        lastResultsCount = results.reviews.length
+        offset += lastResultsCount
+      } catch (error) {
+        yield error
+        // end the generator
+        lastResultsCount = 0
+      }
     }
   }
 
